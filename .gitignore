@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.pytest-*/
+models/*.pkl
+!models/email_classifier.pkl
+/training/emails.csv
+/training/CEAS_08.csv

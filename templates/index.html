@@ -6,14 +6,14 @@
   <meta name="theme-color" content="#0a0a0a">
   <meta name="description" content="Inspect an email for phishing signals with a local machine learning model.">
   <title>Phishing Detector</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-19') }}">
-  <script src="{{ url_for('static', filename='app.js', v='ui-12') }}" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-21') }}">
+  <script src="{{ url_for('static', filename='app.js', v='ui-14') }}" defer></script>
 </head>
 <body>
   {% if request.method == 'GET' %}
   <section class="security-intro" id="security-intro" aria-label="Phishing Detector animated introduction" hidden>
     <div class="intro-scene" aria-hidden="true">
-      <div class="intro-orbit intro-orbit--outer"></div>
+      <div class="intro-orbrtit intro-orbit--outer"></div>
       <div class="intro-orbit intro-orbit--inner"></div>
       <span class="intro-spark intro-spark--one"></span>
       <span class="intro-spark intro-spark--two"></span>
@@ -21,7 +21,7 @@
       <svg class="intro-shield" viewBox="0 0 180 202" fill="none">
         <path class="intro-shield-outline" d="M90 7 160 34v52c0 47-27 82-70 108C47 168 20 133 20 86V34L90 7Z" />
         <path class="intro-shield-inner" d="M90 21 147 43v42c0 38-20 67-57 91-37-24-57-53-57-91V43l57-22Z" />
-        <path class="intro-shield-check" d="m60 99 20 20 42-46" />
+        <path class="intror-shield-check" d="m60 99 20 20 42-46" />
       </svg>
       <div class="intro-envelope" aria-hidden="true">
         <svg viewBox="0 0 56 42" fill="none">
@@ -45,10 +45,11 @@
       <a class="brand" href="{{ url_for('index') }}" aria-label="Phishing Detector home">
         <span class="brand-name"><span class="brand-prompt" aria-hidden="true">~/</span> phishing-detector</span>
       </a>
-      <div class="topbar-status" aria-label="Model status">
-        <span class="status-light" aria-hidden="true"></span>
-        <span>[ local scan ]</span>
-      </div>
+      <nav class="account-nav" aria-label="Account">
+        <span class="account-email">{{ user.email }}</span>
+        {% if user.role == 'admin' %}<a class="account-link" href="{{ url_for('admin') }}">[ dataset ]</a>{% endif %}
+        <form action="{{ url_for('logout') }}" method="post"><button class="logout-button" type="submit">[ sign out ]</button></form>
+      </nav>
     </header>
 
     <main>
@@ -56,7 +57,7 @@
         <div class="intro-copy">
           <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> operator@local:~$ phishing-detector --scan</p>
           <h1 class="terminal-headline" id="page-title" tabindex="-1"><span class="terminal-type-line">Read the message.</span><br><span class="terminal-type-line terminal-type-line--second">See the signal.</span><span class="terminal-cursor" aria-hidden="true">█</span></h1>
-          <p class="intro-description">Paste an email to check whether it carries phishing signals. Your message is analyzed on this server and is not saved.</p>
+          <p class="intro-description">Paste an email to check for phishing signals. Each scan and its result are saved to the shared dataset for admin review.</p>
         </div>
       </section>
 
@@ -94,7 +95,7 @@
           <p class="inline-error" id="email-error" role="alert" {% if not error or error.kind != 'input' %}hidden{% endif %}>{% if error and error.kind == 'input' %}{{ error.message }}{% endif %}</p>
 
           <div class="form-footer">
-            <p class="privacy-note"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6V4.7a4 4 0 0 1 8 0V6m-8 0h8a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 12 14H4a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 4 6Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M8 9v2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg> Data retention: none</p>
+            <p class="privacy-note"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6V4.7a4 4 0 0 1 8 0V6m-8 0h8a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 12 14H4a1.5 1.5 0 0 1-1.5-1.5v-5A1.5 1.5 0 0 1 4 6Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M8 9v2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg> Saved for admin review</p>
             <button class="scan-button" id="scan-button" type="submit" aria-label="Scan email">
               <span class="button-label">[ scan email ]</span>
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11m-4-4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -133,22 +134,31 @@
               <p class="result-kicker">Message assessment</p>
               <h2 id="result-heading">{% if result.verdict == 'phishing' %}Phishing detected{% else %}Likely legitimate{% endif %}</h2>
               <p class="result-description">{% if result.verdict == 'phishing' %}This message matches patterns associated with phishing. Avoid its links and verify the sender through another channel.{% else %}This message appears legitimate based on the available model. Continue to use care with unexpected requests.{% endif %}</p>
-              <section class="term-explanation" aria-label="Words supporting the verdict">
-                <p class="term-explanation-label">Top words supporting this result</p>
-                {% if result.top_terms %}
-                  <ul class="term-list">
-                    {% for term in result.top_terms %}<li>{{ term }}</li>{% endfor %}
-                  </ul>
+              {% if storage_notice %}<p class="storage-notice" role="status">{{ storage_notice }}</p>{% endif %}
+              <section class="models-breakdown" aria-label="Model consensus and comparison">
+                <p class="models-breakdown-label">Multi-Model Analysis (3 Models)</p>
+                {% if result.models %}
+                  <div class="models-grid">
+                    {% for m in result.models %}
+                      <div class="model-row model-row--{{ m.verdict }}">
+                        <div class="model-row-info">
+                          <span class="model-name">{{ m.name }}</span>
+                          <span class="model-badge model-badge--{{ m.verdict }}">{{ m.badge }}</span>
+                        </div>
+                        <div class="model-meter-wrap">
+                          <div class="model-track" role="meter" aria-label="{{ m.name }} confidence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ m.confidence_percent }}">
+                            <span class="model-fill model-fill--{{ m.verdict }}" style="width: {{ m.confidence_percent }}%"></span>
+                          </div>
+                          <span class="model-confidence-val" data-model-val="{{ m.confidence_percent }}">{{ '%.1f'|format(m.confidence_percent) }}%</span>
+                        </div>
+                      </div>
+                    {% endfor %}
+                  </div>
                 {% else %}
-                  <p class="term-explanation-empty">No individual words strongly supported this result.</p>
+                  <p class="models-breakdown-empty">Model comparison unavailable.</p>
                 {% endif %}
-                <p class="term-explanation-note">The model also weighs links and other email patterns.</p>
+                <p class="models-breakdown-note">Evaluating Logistic Regression, Naive Bayes, and Random Forest.</p>
               </section>
-              <div class="confidence-block">
-                <div class="confidence-copy"><span>{{ result.verdict|capitalize }} confidence</span><strong data-confidence-value="{{ result.confidence_percent }}">{{ '%.1f'|format(result.confidence_percent) }}%</strong></div>
-                <div class="confidence-track" role="meter" aria-label="{{ result.verdict|capitalize }} confidence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ result.confidence_percent }}"><span class="confidence-fill" data-confidence-fill="{{ result.confidence_percent }}" style="width: {{ result.confidence_percent }}%"></span></div>
-                <p class="confidence-footnote">Model probability for the displayed verdict</p>
-              </div>
             </div>
           {% elif error %}
             <div class="empty-state empty-state--{{ error.kind }}">

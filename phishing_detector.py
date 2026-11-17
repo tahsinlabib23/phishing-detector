@@ -197,7 +197,28 @@ class PhishingModel:
         self._pipeline = None
         self._signature = None
         self._load_error_signature = None
+        self._secondary_pipelines = {}
         self._lock = threading.Lock()
+
+    def _get_secondary_pipeline(self, path: Path):
+        try:
+            stat = path.stat()
+        except (FileNotFoundError, OSError):
+            return None
+        signature = (stat.st_mtime_ns, stat.st_size)
+        path_key = str(path)
+        with self._lock:
+            cached = self._secondary_pipelines.get(path_key)
+            if cached and cached[1] == signature:
+                return cached[0]
+            try:
+                pipeline = self.loader(path)
+                if not callable(getattr(pipeline, "predict", None)) or not callable(getattr(pipeline, "predict_proba", None)):
+                    return None
+                self._secondary_pipelines[path_key] = (pipeline, signature)
+                return pipeline
+            except Exception:
+                return None
 
     def _get_pipeline(self):
         try:
@@ -303,12 +324,39 @@ class PhishingModel:
 
             confidence = probability_by_label[predicted]
             verdict = "phishing" if predicted == 1 else "legitimate"
+
+            # Multi-model evaluation across Logistic Regression, Naive Bayes, and Random Forest
+            candidate_models = [
+                ("Logistic Regression", pipeline),
+                ("Naive Bayes", self._get_secondary_pipeline(self.model_path.parent / "naive_bayes_model.pkl")),
+                ("Random Forest", self._get_secondary_pipeline(self.model_path.parent / "random_forest_model.pkl")),
+            ]
+
+            models_results = []
+            for m_name, m_pipeline in candidate_models:
+                if m_pipeline is None:
+                    continue
+                try:
+                    m_pred = self._binary_label(m_pipeline.predict([email_text])[0])
+                    m_rows = m_pipeline.predict_proba([email_text])
+                    m_prob = float(m_rows[0][m_pred])
+                    m_verdict = "phishing" if m_pred == 1 else "legitimate"
+                    models_results.append({
+                        "name": m_name,
+                        "verdict": m_verdict,
+                        "badge": "SCAM" if m_verdict == "phishing" else "SAFE",
+                        "confidence_percent": round(m_prob * 100, 1),
+                    })
+                except Exception:
+                    continue
+
             return {
                 "label": predicted,
                 "verdict": verdict,
                 "confidence": confidence,
                 "confidence_percent": round(confidence * 100, 1),
                 "top_terms": self._top_contributing_terms(pipeline, email_text, predicted),
+                "models": models_results,
             }
         except (ModelNotAvailable, ModelLoadError):
             raise

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0a0a">
+  <title>{% if mode == 'register' %}Create account{% elif mode == 'forbidden' %}Access denied{% else %}Sign in{% endif %} · Phishing Detector</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-20') }}">
+</head>
+<body>
+  <div class="page-shell auth-shell">
+    <header class="topbar">
+      <a class="brand" href="{{ url_for('login') }}"><span class="brand-name"><span class="brand-prompt" aria-hidden="true">~/</span> phishing-detector</span></a>
+      {% if mode != 'forbidden' %}<a class="account-link" href="{{ url_for('register' if mode == 'login' else 'login') }}">[ {% if mode == 'login' %}create account{% else %}sign in{% endif %} ]</a>{% endif %}
+    </header>
+    <main class="auth-main">
+      <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> secure access // phishing-detector</p>
+      <h1>{% if mode == 'register' %}Create your account.{% elif mode == 'forbidden' %}Access denied.{% else %}Sign in to scan.{% endif %}</h1>
+      <p class="auth-description">{% if mode == 'forbidden' %}Your account does not have permission to view this page.{% else %}Use your account to inspect emails. Scan text and results are saved for admin review.{% endif %}</p>
+
+      {% if message %}<p class="auth-notice" role="status">{{ message }}</p>{% endif %}
+      {% if error %}<p class="auth-error" role="alert">{{ error }}</p>{% endif %}
+      {% if not configured and mode != 'forbidden' %}<p class="auth-error" role="alert">Supabase is not configured. Add the project URL and public anon key to the app environment.</p>{% endif %}
+
+      {% if mode != 'forbidden' %}
+      <form class="auth-card" action="{{ url_for('register_submit' if mode == 'register' else 'login_submit') }}" method="post">
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <label class="auth-label" for="auth-email">Email</label>
+        <input class="text-input" id="auth-email" name="email" type="email" autocomplete="email" maxlength="320" required value="{{ email|default('') }}" placeholder="you@example.com">
+        <label class="auth-label" for="auth-password">Password{% if mode == 'register' %} <span>(8 characters minimum)</span>{% endif %}</label>
+        <input class="text-input" id="auth-password" name="password" type="password" autocomplete="{{ 'new-password' if mode == 'register' else 'current-password' }}" minlength="{{ 8 if mode == 'register' else 1 }}" required placeholder="••••••••">
+        <button class="scan-button auth-submit" type="submit" {% if not configured %}disabled{% endif %}>
+          <span>{% if mode == 'register' %}[ create account ]{% else %}[ sign in ]{% endif %}</span>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11m-4-4 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+      {% endif %}
+
+      <p class="auth-footnote">Passwords are handled by Supabase Auth. The website never stores them.</p>
+    </main>
+    <footer class="site-footer" aria-label="Site information">
+      <a class="footer-brand" href="{{ url_for('login') }}">Phishing <span>Detector</span></a>
+      <span class="site-footer-rule" aria-hidden="true"></span>
+      <span class="footer-description">// account access</span>
+    </footer>
+  </div>
+</body>
+</html>

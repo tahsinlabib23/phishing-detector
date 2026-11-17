@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0a0a">
+  <title>Admin dataset · Phishing Detector</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-20') }}">
+</head>
+<body>
+  <div class="page-shell admin-shell">
+    <header class="topbar">
+      <a class="brand" href="{{ url_for('index') }}"><span class="brand-name"><span class="brand-prompt" aria-hidden="true">~/</span> phishing-detector</span></a>
+      <nav class="account-nav" aria-label="Account">
+        <span class="account-email">{{ user.email }}</span>
+        <a class="account-link" href="{{ url_for('index') }}">[ scan email ]</a>
+        <form action="{{ url_for('logout') }}" method="post"><button class="logout-button" type="submit">[ sign out ]</button></form>
+      </nav>
+    </header>
+    <main class="admin-main">
+      <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> admin@dataset:~$ select * from email_scans</p>
+      <div class="admin-heading-row">
+        <div>
+          <h1>Scan dataset.</h1>
+          <p class="auth-description">Saved email content and model results. Email text is visible to authorized admins.</p>
+        </div>
+        <span class="dataset-count">{{ scans|length }} <small>latest records</small></span>
+      </div>
+      {% if load_error %}<p class="auth-error" role="alert">{{ load_error }}</p>{% endif %}
+      {% if not load_error and not scans %}<div class="dataset-empty">No scans have been saved yet.</div>{% endif %}
+      {% if scans %}
+      <div class="dataset-table-wrap">
+        <table class="dataset-table">
+          <thead><tr><th>Scanned</th><th>Account</th><th>From</th><th>Subject / message</th><th>Verdict</th><th>Confidence</th></tr></thead>
+          <tbody>
+            {% for row in scans %}
+            <tr>
+              <td class="dataset-date">{{ row.created_at|replace('T', ' ')|replace('+00:00', ' UTC')|replace('Z', ' UTC') }}</td>
+              <td class="dataset-sender">{{ row.profiles.email if row.profiles else row.user_id }}</td>
+              <td class="dataset-sender">{{ row.sender }}</td>
+              <td class="dataset-message">
+                <strong>{{ row.subject or '(no subject)' }}</strong>
+                <details><summary>View saved email</summary><pre>{{ row.email_body }}</pre>{% if row.top_terms %}<p class="dataset-terms">Model determinations: {{ row.top_terms|join(', ') }}</p>{% endif %}</details>
+              </td>
+              <td><span class="dataset-verdict dataset-verdict--{{ row.verdict }}">{{ 'SCAM' if row.verdict == 'phishing' else 'SAFE' }}</span></td>
+              <td>{{ '%.1f'|format(row.confidence_percent|float) }}%</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="dataset-limit">Showing up to 100 most recent scans. Row access is restricted by Supabase policies.</p>
+      {% endif %}
+    </main>
+    <footer class="site-footer" aria-label="Site information">
+      <a class="footer-brand" href="{{ url_for('index') }}">Phishing <span>Detector</span></a>
+      <span class="site-footer-rule" aria-hidden="true"></span>
+      <span class="footer-description">// admin dataset</span>
+    </footer>
+  </div>
+</body>
+</html>

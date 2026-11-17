@@ -38,25 +38,50 @@
   }
 
   const animateConfidence = (panel) => {
-    const confidenceValue = panel?.querySelector("[data-confidence-value]");
-    const confidenceFill = panel?.querySelector("[data-confidence-fill]");
-    if (!confidenceValue || !confidenceFill || reduceMotion) return;
+    if (!panel || reduceMotion) return;
 
-    const target = Number(confidenceValue.dataset.confidenceValue);
-    const start = performance.now();
-    const duration = 820;
-    confidenceValue.textContent = "0.0%";
-    confidenceFill.style.width = "0%";
+    const modelRows = panel.querySelectorAll(".model-row");
+    modelRows.forEach((row) => {
+      const valEl = row.querySelector("[data-model-val]");
+      const fillEl = row.querySelector(".model-fill");
+      if (!valEl || !fillEl) return;
 
-    const animateConfidence = (now) => {
-      const progress = Math.min((now - start) / duration, 1);
-      const eased = 1 - (1 - progress) ** 3;
-      confidenceValue.textContent = `${(target * eased).toFixed(1)}%`;
-      confidenceFill.style.width = `${target * eased}%`;
-      if (progress < 1) requestAnimationFrame(animateConfidence);
-    };
+      const target = Number(valEl.dataset.modelVal);
+      const start = performance.now();
+      const duration = 820;
+      valEl.textContent = "0.0%";
+      fillEl.style.width = "0%";
 
-    requestAnimationFrame(animateConfidence);
+      const step = (now) => {
+        const progress = Math.min((now - start) / duration, 1);
+        const eased = 1 - (1 - progress) ** 3;
+        valEl.textContent = `${(target * eased).toFixed(1)}%`;
+        fillEl.style.width = `${target * eased}%`;
+        if (progress < 1) requestAnimationFrame(step);
+      };
+
+      requestAnimationFrame(step);
+    });
+
+    const confidenceValue = panel.querySelector("[data-confidence-value]");
+    const confidenceFill = panel.querySelector("[data-confidence-fill]");
+    if (confidenceValue && confidenceFill) {
+      const target = Number(confidenceValue.dataset.confidenceValue);
+      const start = performance.now();
+      const duration = 820;
+      confidenceValue.textContent = "0.0%";
+      confidenceFill.style.width = "0%";
+
+      const step = (now) => {
+        const progress = Math.min((now - start) / duration, 1);
+        const eased = 1 - (1 - progress) ** 3;
+        confidenceValue.textContent = `${(target * eased).toFixed(1)}%`;
+        confidenceFill.style.width = `${target * eased}%`;
+        if (progress < 1) requestAnimationFrame(step);
+      };
+
+      requestAnimationFrame(step);
+    }
   };
 
   animateConfidence(analysisPanel);
@@ -206,6 +231,10 @@
         headers: { "X-Requested-With": "XMLHttpRequest" },
         credentials: "same-origin",
       });
+      if (response.status === 401) {
+        window.location.assign("/login?next=/");
+        return;
+      }
       const responseHtml = await response.text();
       const parsedPage = new DOMParser().parseFromString(responseHtml, "text/html");
       const nextPanel = parsedPage.querySelector("#analysis-panel");

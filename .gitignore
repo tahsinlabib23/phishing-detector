@@ -1,8 +1,15 @@
 .venv/
+.env
+.env.*
+!.env.example
 __pycache__/
 .pytest_cache/
 .pytest-*/
 models/*.pkl
 !models/email_classifier.pkl
+!models/naive_bayes_model.pkl
+!models/random_forest_model.pkl
 /training/emails.csv
 /training/CEAS_08.csv
+training/*.csv
+training/*.parquet.gzip

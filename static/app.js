@@ -234,7 +234,7 @@
 
     try {
       if (!reduceMotion) {
-        await new Promise((resolve) => window.setTimeout(resolve, 840));
+        await new Promise((resolve) => window.setTimeout(resolve, 180));
       }
       const response = await window.fetch(form.action, {
         method: "POST",

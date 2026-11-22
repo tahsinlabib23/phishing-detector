@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#0a0a0a">
   <meta name="description" content="Inspect an email for phishing signals with a local machine learning model.">
   <title>Phishing Detector</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-22') }}">
-  <script src="{{ url_for('static', filename='app.js', v='ui-22') }}" defer></script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-23') }}">
+  <script src="{{ url_for('static', filename='app.js', v='ui-23') }}" defer></script>
 </head>
 <body>
   {% if request.method == 'GET' %}
@@ -96,9 +96,9 @@
               <span class="textarea-gutter" aria-hidden="true">&gt;_</span>
               <span class="scan-beam" aria-hidden="true"></span>
               {% if error and error.kind == 'input' %}
-              <textarea id="email-body" name="email_body" rows="9" maxlength="20000" placeholder="Paste the email message here…" aria-describedby="email-error" required aria-invalid="true">{{ email_body }}</textarea>
+              <textarea id="email-body" name="email_body" rows="9" maxlength="50000" placeholder="Paste the email message here…" aria-describedby="email-error" required aria-invalid="true">{{ email_body }}</textarea>
               {% else %}
-              <textarea id="email-body" name="email_body" rows="9" maxlength="20000" placeholder="Paste the email message here…" aria-describedby="email-error" required>{{ email_body }}</textarea>
+              <textarea id="email-body" name="email_body" rows="9" maxlength="50000" placeholder="Paste the email message here…" aria-describedby="email-error" required>{{ email_body }}</textarea>
               {% endif %}
             </div>
           </div>

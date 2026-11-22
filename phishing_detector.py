@@ -278,7 +278,28 @@ class PhishingModel:
         self._signature = None
         self._load_error_signature = None
         self._secondary_pipelines = {}
+        self._index_to_term = None
         self._lock = threading.Lock()
+        if loader is None and self.model_path.exists():
+            threading.Thread(target=self._warmup, daemon=True).start()
+
+    def _warmup(self):
+        try:
+            self._get_pipeline()
+            for name in ("naive_bayes_model.pkl", "random_forest_model.pkl"):
+                self._get_secondary_pipeline(self.model_path.parent / name)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _optimize_single_row_inference(pipeline):
+        try:
+            clf = getattr(pipeline, "named_steps", {}).get("classifier")
+            if clf is not None and hasattr(clf, "n_jobs"):
+                clf.n_jobs = 1
+        except Exception:
+            pass
+        return pipeline
 
     def _get_secondary_pipeline(self, path: Path):
         try:
@@ -292,7 +313,7 @@ class PhishingModel:
             if cached and cached[1] == signature:
                 return cached[0]
             try:
-                pipeline = self.loader(path)
+                pipeline = self._optimize_single_row_inference(self.loader(path))
                 if not callable(getattr(pipeline, "predict", None)) or not callable(getattr(pipeline, "predict_proba", None)):
                     return None
                 self._secondary_pipelines[path_key] = (pipeline, signature)
@@ -314,7 +335,7 @@ class PhishingModel:
                 raise ModelLoadError("The model artifact is not a supported pipeline")
 
             try:
-                pipeline = self.loader(self.model_path)
+                pipeline = self._optimize_single_row_inference(self.loader(self.model_path))
                 if not callable(getattr(pipeline, "predict", None)):
                     raise TypeError("Pipeline has no predict method")
                 if not callable(getattr(pipeline, "predict_proba", None)):
@@ -322,10 +343,18 @@ class PhishingModel:
                 self._pipeline = pipeline
                 self._signature = signature
                 self._load_error_signature = None
+                try:
+                    steps = getattr(pipeline, "named_steps", {})
+                    word_vec = dict(steps["features"].transformer_list).get("word_tfidf")
+                    vocab = getattr(word_vec, "vocabulary_", None)
+                    self._index_to_term = {idx: term for term, idx in vocab.items()} if isinstance(vocab, dict) else None
+                except Exception:
+                    self._index_to_term = None
                 return pipeline
             except Exception as exc:
                 self._pipeline = None
                 self._signature = None
+                self._index_to_term = None
                 self._load_error_signature = signature
                 raise ModelLoadError("The model artifact could not be loaded") from exc
 
@@ -341,8 +370,7 @@ class PhishingModel:
             raise ValueError("Expected binary labels 0 and 1")
         return label
 
-    @staticmethod
-    def _top_contributing_terms(pipeline, email_text: str, predicted: int, limit: int = 3) -> list[str]:
+    def _top_contributing_terms(self, pipeline, email_text: str, predicted: int, limit: int = 3) -> list[str]:
         """Return active word n-grams that support the predicted class."""
         try:
             steps = pipeline.named_steps
@@ -360,12 +388,14 @@ class PhishingModel:
             direction = phishing_direction if predicted == 1 else -phishing_direction
             row = word_vectorizer.transform([email_text]).tocsr()
             coefficients = classifier.coef_[0]
-            terms = word_vectorizer.get_feature_names_out()
+            index_to_term = self._index_to_term
+            terms = word_vectorizer.get_feature_names_out() if index_to_term is None else None
             ignored_terms = {"from", "subject", "text", "title", "com", "org", "net", "www", "http", "https"}
             contributions = {}
 
             for index, tfidf_value in zip(row.indices, row.data):
-                term = str(terms[index]).strip()
+                raw_term = index_to_term.get(int(index), "") if index_to_term is not None else terms[index]
+                term = str(raw_term).strip()
                 if " " in term or term in ignored_terms or not any(character.isalpha() for character in term):
                     continue
                 contribution = float(tfidf_value * coefficients[index] * direction)
@@ -387,7 +417,6 @@ class PhishingModel:
             if sorted(normalized_classes) != [0, 1]:
                 raise ValueError("Pipeline classes must be 0 and 1")
 
-            predicted = self._binary_label(pipeline.predict([email_text])[0])
             rows = pipeline.predict_proba([email_text])
             if len(rows) != 1 or len(rows[0]) != len(classes):
                 raise ValueError("Probability output does not match model classes")
@@ -402,24 +431,34 @@ class PhishingModel:
             if abs(sum(probability_by_label.values()) - 1.0) > 1e-3:
                 raise ValueError("Model probabilities must sum to one")
 
+            predicted = 1 if probability_by_label[1] >= probability_by_label[0] else 0
             confidence = probability_by_label[predicted]
             verdict = "phishing" if predicted == 1 else "legitimate"
+            primary_confidence_pct = round(confidence * 100, 1)
 
-            # Multi-model evaluation across Logistic Regression, Naive Bayes, and Random Forest
-            candidate_models = [
-                ("Logistic Regression", pipeline),
-                ("Naive Bayes", self._get_secondary_pipeline(self.model_path.parent / "naive_bayes_model.pkl")),
-                ("Random Forest", self._get_secondary_pipeline(self.model_path.parent / "random_forest_model.pkl")),
+            models_results = [
+                {
+                    "name": "Logistic Regression",
+                    "verdict": verdict,
+                    "badge": "SCAM" if verdict == "phishing" else "SAFE",
+                    "confidence_percent": primary_confidence_pct,
+                }
             ]
 
-            models_results = []
-            for m_name, m_pipeline in candidate_models:
+            secondary_models = (
+                ("Naive Bayes", self._get_secondary_pipeline(self.model_path.parent / "naive_bayes_model.pkl")),
+                ("Random Forest", self._get_secondary_pipeline(self.model_path.parent / "random_forest_model.pkl")),
+            )
+
+            for m_name, m_pipeline in secondary_models:
                 if m_pipeline is None:
                     continue
                 try:
-                    m_pred = self._binary_label(m_pipeline.predict([email_text])[0])
                     m_rows = m_pipeline.predict_proba([email_text])
-                    m_prob = float(m_rows[0][m_pred])
+                    m_classes = [self._binary_label(v) for v in m_pipeline.classes_]
+                    m_probs = {lbl: float(prob) for lbl, prob in zip(m_classes, m_rows[0])}
+                    m_pred = 1 if m_probs.get(1, 0.0) >= m_probs.get(0, 0.0) else 0
+                    m_prob = m_probs[m_pred]
                     m_verdict = "phishing" if m_pred == 1 else "legitimate"
                     models_results.append({
                         "name": m_name,
@@ -435,7 +474,7 @@ class PhishingModel:
                 "label": predicted,
                 "verdict": verdict,
                 "confidence": confidence,
-                "confidence_percent": round(confidence * 100, 1),
+                "confidence_percent": primary_confidence_pct,
                 "top_terms": self._top_contributing_terms(pipeline, email_text, predicted),
                 "models": models_results,
                 "threat_category": threat_info["threat_category"],

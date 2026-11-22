@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -31,7 +32,8 @@ from phishing_detector import (
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 MAX_EMAIL_CHARS = 50_000
-SUPABASE_TIMEOUT_SECONDS = 12
+SUPABASE_TIMEOUT_SECONDS = 8
+SESSION_CACHE_TTL_SECONDS = 60
 
 
 class SupabaseUnavailable(Exception):
@@ -69,6 +71,7 @@ def create_app(config=None):
         app.config.update(config)
 
     classifier = app.config.get("CLASSIFIER") or PhishingModel(app.config["MODEL_PATH"])
+    user_session_cache: dict[str, tuple[float, dict]] = {}
 
     def supabase_ready():
         return bool(app.config["SUPABASE_URL"] and app.config["SUPABASE_PUBLISHABLE_KEY"])
@@ -161,6 +164,11 @@ def create_app(config=None):
         access_token = request.cookies.get("sb_access_token")
         if not access_token:
             return None
+        cached_entry = user_session_cache.get(access_token)
+        if cached_entry and cached_entry[0] > time.monotonic():
+            g.supabase_access_token = access_token
+            g.current_user = dict(cached_entry[1])
+            return g.current_user
         try:
             user_data, _status = supabase_request("/auth/v1/user", access_token=access_token)
         except SupabaseResponseError as exc:
@@ -211,6 +219,9 @@ def create_app(config=None):
             "display_name": str(user_meta.get("display_name") or ""),
             "organization": str(user_meta.get("organization") or ""),
         }
+        if len(user_session_cache) > 256:
+            user_session_cache.clear()
+        user_session_cache[access_token] = (time.monotonic() + SESSION_CACHE_TTL_SECONDS, dict(g.current_user))
         return g.current_user
 
     def login_required(view):
@@ -367,6 +378,7 @@ def create_app(config=None):
     @login_required
     def logout():
         token = g.supabase_access_token
+        user_session_cache.pop(token, None)
         try:
             supabase_request("/auth/v1/logout", method="POST", access_token=token)
         except (SupabaseUnavailable, SupabaseResponseError):
@@ -592,6 +604,11 @@ def create_app(config=None):
             )
             g.current_user["display_name"] = display_name
             g.current_user["organization"] = organization
+            if getattr(g, "supabase_access_token", None):
+                user_session_cache[g.supabase_access_token] = (
+                    time.monotonic() + SESSION_CACHE_TTL_SECONDS,
+                    dict(g.current_user),
+                )
         except (SupabaseResponseError, SupabaseUnavailable):
             return render_profile_page(
                 error="Could not save your profile settings right now.",

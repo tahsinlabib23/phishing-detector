@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import math
 import ipaddress
 import re
@@ -277,8 +278,7 @@ class PhishingModel:
         self._pipeline = None
         self._signature = None
         self._load_error_signature = None
-        self._secondary_pipelines = {}
-        self._index_to_term = None
+        self._secondary_classifiers = {}
         self._lock = threading.Lock()
         if loader is None and self.model_path.exists():
             threading.Thread(target=self._warmup, daemon=True).start()
@@ -287,21 +287,22 @@ class PhishingModel:
         try:
             self._get_pipeline()
             for name in ("naive_bayes_model.pkl", "random_forest_model.pkl"):
-                self._get_secondary_pipeline(self.model_path.parent / name)
+                self._get_secondary_classifier(self.model_path.parent / name)
+            gc.collect()
         except Exception:
             pass
 
     @staticmethod
-    def _optimize_single_row_inference(pipeline):
+    def _optimize_single_row_inference(obj):
         try:
-            clf = getattr(pipeline, "named_steps", {}).get("classifier")
+            clf = getattr(obj, "named_steps", {}).get("classifier", obj)
             if clf is not None and hasattr(clf, "n_jobs"):
                 clf.n_jobs = 1
         except Exception:
             pass
-        return pipeline
+        return obj
 
-    def _get_secondary_pipeline(self, path: Path):
+    def _get_secondary_classifier(self, path: Path):
         try:
             stat = path.stat()
         except (FileNotFoundError, OSError):
@@ -309,15 +310,21 @@ class PhishingModel:
         signature = (stat.st_mtime_ns, stat.st_size)
         path_key = str(path)
         with self._lock:
-            cached = self._secondary_pipelines.get(path_key)
+            cached = self._secondary_classifiers.get(path_key)
             if cached and cached[1] == signature:
                 return cached[0]
             try:
-                pipeline = self._optimize_single_row_inference(self.loader(path))
-                if not callable(getattr(pipeline, "predict", None)) or not callable(getattr(pipeline, "predict_proba", None)):
+                loaded = self.loader(path)
+                if hasattr(loaded, "named_steps") and "classifier" in loaded.named_steps:
+                    clf = self._optimize_single_row_inference(loaded.named_steps["classifier"])
+                    del loaded
+                    gc.collect()
+                else:
+                    clf = self._optimize_single_row_inference(loaded)
+                if not callable(getattr(clf, "predict_proba", None)):
                     return None
-                self._secondary_pipelines[path_key] = (pipeline, signature)
-                return pipeline
+                self._secondary_classifiers[path_key] = (clf, signature)
+                return clf
             except Exception:
                 return None
 
@@ -343,18 +350,11 @@ class PhishingModel:
                 self._pipeline = pipeline
                 self._signature = signature
                 self._load_error_signature = None
-                try:
-                    steps = getattr(pipeline, "named_steps", {})
-                    word_vec = dict(steps["features"].transformer_list).get("word_tfidf")
-                    vocab = getattr(word_vec, "vocabulary_", None)
-                    self._index_to_term = {idx: term for term, idx in vocab.items()} if isinstance(vocab, dict) else None
-                except Exception:
-                    self._index_to_term = None
+                gc.collect()
                 return pipeline
             except Exception as exc:
                 self._pipeline = None
                 self._signature = None
-                self._index_to_term = None
                 self._load_error_signature = signature
                 raise ModelLoadError("The model artifact could not be loaded") from exc
 
@@ -388,14 +388,12 @@ class PhishingModel:
             direction = phishing_direction if predicted == 1 else -phishing_direction
             row = word_vectorizer.transform([email_text]).tocsr()
             coefficients = classifier.coef_[0]
-            index_to_term = self._index_to_term
-            terms = word_vectorizer.get_feature_names_out() if index_to_term is None else None
+            terms = word_vectorizer.get_feature_names_out()
             ignored_terms = {"from", "subject", "text", "title", "com", "org", "net", "www", "http", "https"}
             contributions = {}
 
             for index, tfidf_value in zip(row.indices, row.data):
-                raw_term = index_to_term.get(int(index), "") if index_to_term is not None else terms[index]
-                term = str(raw_term).strip()
+                term = str(terms[index]).strip()
                 if " " in term or term in ignored_terms or not any(character.isalpha() for character in term):
                     continue
                 contribution = float(tfidf_value * coefficients[index] * direction)
@@ -446,16 +444,25 @@ class PhishingModel:
             ]
 
             secondary_models = (
-                ("Naive Bayes", self._get_secondary_pipeline(self.model_path.parent / "naive_bayes_model.pkl")),
-                ("Random Forest", self._get_secondary_pipeline(self.model_path.parent / "random_forest_model.pkl")),
+                ("Naive Bayes", self._get_secondary_classifier(self.model_path.parent / "naive_bayes_model.pkl")),
+                ("Random Forest", self._get_secondary_classifier(self.model_path.parent / "random_forest_model.pkl")),
             )
 
-            for m_name, m_pipeline in secondary_models:
-                if m_pipeline is None:
+            shared_word_vec = None
+            try:
+                steps = getattr(pipeline, "named_steps", {})
+                shared_word_vec = dict(steps["features"].transformer_list).get("word_tfidf")
+            except Exception:
+                shared_word_vec = None
+
+            shared_tfidf_row = shared_word_vec.transform([email_text]) if shared_word_vec is not None else None
+
+            for m_name, m_clf in secondary_models:
+                if m_clf is None or shared_tfidf_row is None:
                     continue
                 try:
-                    m_rows = m_pipeline.predict_proba([email_text])
-                    m_classes = [self._binary_label(v) for v in m_pipeline.classes_]
+                    m_rows = m_clf.predict_proba(shared_tfidf_row)
+                    m_classes = [self._binary_label(v) for v in m_clf.classes_]
                     m_probs = {lbl: float(prob) for lbl, prob in zip(m_classes, m_rows[0])}
                     m_pred = 1 if m_probs.get(1, 0.0) >= m_probs.get(0, 0.0) else 0
                     m_prob = m_probs[m_pred]
@@ -475,7 +482,7 @@ class PhishingModel:
                 "verdict": verdict,
                 "confidence": confidence,
                 "confidence_percent": primary_confidence_pct,
-                "top_terms": self._top_contributing_terms(pipeline, email_text, predicted),
+                "top_terms": [] if len(models_results) > 1 else self._top_contributing_terms(pipeline, email_text, predicted),
                 "models": models_results,
                 "threat_category": threat_info["threat_category"],
                 "threat_category_label": threat_info["threat_category_label"],

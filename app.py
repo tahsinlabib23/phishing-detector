@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -16,10 +17,14 @@ from flask import Flask, abort, g, jsonify, redirect, render_template, request, 
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from phishing_detector import (
+    MODEL_BENCHMARKS,
     ModelLoadError,
     ModelNotAvailable,
     PhishingModel,
     PredictionError,
+    THREAT_CATEGORIES,
+    THREAT_CATEGORY_LABELS,
+    classify_threat_category,
 )
 
 
@@ -189,17 +194,22 @@ def create_app(config=None):
             rows, _status = supabase_request(
                 "/rest/v1/profiles",
                 access_token=access_token,
-                query={"select": "id,email,role", "id": f"eq.{user_id}", "limit": "1"},
+                query={"select": "id,email,role,created_at", "id": f"eq.{user_id}", "limit": "1"},
             )
             profile = rows[0] if rows else {}
         except (SupabaseUnavailable, SupabaseResponseError):
             app.logger.warning("Could not load the signed-in user's profile")
             profile = {}
+        user_meta = user_data.get("user_metadata") if isinstance(user_data.get("user_metadata"), dict) else {}
         g.supabase_access_token = access_token
         g.current_user = {
             "id": user_id,
             "email": user_data.get("email", ""),
             "role": profile.get("role", "user"),
+            "created_at": profile.get("created_at") or user_data.get("created_at", ""),
+            "last_sign_in_at": user_data.get("last_sign_in_at", ""),
+            "display_name": str(user_meta.get("display_name") or ""),
+            "organization": str(user_meta.get("organization") or ""),
         }
         return g.current_user
 
@@ -435,27 +445,293 @@ def create_app(config=None):
             storage_notice = "The result is ready, but this scan could not be saved to the shared dataset."
         return render_page(**form_values, result=result, storage_notice=storage_notice)
 
-    @app.get("/admin")
-    @admin_required
-    def admin():
-        scans = []
+    def enrich_scan_rows(raw_scans):
+        enriched = []
+        for row in raw_scans or []:
+            combined_text = "\n".join(
+                part for part in (
+                    f"From: {row.get('sender', '').strip()}" if row.get("sender") else "",
+                    f"Subject: {row.get('subject', '').strip()}" if row.get("subject") else "",
+                    str(row.get("email_body", "")),
+                ) if part
+            )
+            verdict_val = row.get("verdict", "legitimate")
+            saved_cat = row.get("threat_category")
+            if saved_cat in THREAT_CATEGORY_LABELS:
+                cat_slug = saved_cat
+                cat_label = THREAT_CATEGORY_LABELS[saved_cat]
+            else:
+                threat_info = classify_threat_category(combined_text, verdict_val)
+                cat_slug = threat_info["threat_category"]
+                cat_label = threat_info["threat_category_label"]
+
+            created_str = str(row.get("created_at") or "")
+            scan_date = created_str[:10] if len(created_str) >= 10 else ""
+            enriched_row = dict(row)
+            enriched_row["threat_category"] = cat_slug
+            enriched_row["threat_category_label"] = cat_label
+            enriched_row["scan_date"] = scan_date
+            enriched.append(enriched_row)
+        return enriched
+
+    def render_profile_page(*, notice=None, error=None, status=200):
+        user = current_user()
+        raw_scans = []
         load_error = None
         try:
-            scans, _status = supabase_request(
+            raw_scans, _status = supabase_request(
                 "/rest/v1/email_scans",
                 access_token=g.supabase_access_token,
                 query={
-                    "select": "id,user_id,profiles(email),sender,subject,email_body,verdict,confidence_percent,top_terms,created_at",
+                    "select": "id,user_id,sender,subject,email_body,verdict,confidence_percent,top_terms,created_at",
+                    "user_id": f"eq.{user['id']}",
                     "order": "created_at.desc",
-                    "limit": "100",
+                    "limit": "200",
                 },
+            )
+        except SupabaseUnavailable:
+            load_error = "Could not connect to Supabase to load your scan statistics."
+        except SupabaseResponseError:
+            app.logger.exception("Profile scan history query failed")
+            load_error = "Your personal scan history could not be loaded."
+
+        user_scans = enrich_scan_rows(raw_scans)
+        total_scans = len(user_scans)
+        phishing_count = sum(1 for r in user_scans if r.get("verdict") == "phishing")
+        legitimate_count = total_scans - phishing_count
+        phishing_pct = round(phishing_count / total_scans * 100, 1) if total_scans else 0.0
+        legitimate_pct = round(legitimate_count / total_scans * 100, 1) if total_scans else 0.0
+        avg_conf = (
+            round(
+                sum(float(r.get("confidence_percent") or 0.0) for r in user_scans) / total_scans,
+                1,
+            )
+            if total_scans
+            else 0.0
+        )
+        last_scan_at = user_scans[0].get("created_at", "") if user_scans else ""
+
+        profile_stats = {
+            "total_scans": total_scans,
+            "phishing_count": phishing_count,
+            "phishing_pct": phishing_pct,
+            "legitimate_count": legitimate_count,
+            "legitimate_pct": legitimate_pct,
+            "avg_confidence": avg_conf,
+            "last_scan_at": last_scan_at,
+        }
+        return (
+            render_template(
+                "profile.html",
+                user=user,
+                profile_stats=profile_stats,
+                recent_scans=user_scans[:5],
+                load_error=load_error,
+                notice=notice,
+                error=error,
+            ),
+            status,
+        )
+
+    @app.get("/profile")
+    @login_required
+    def profile():
+        return render_profile_page()
+
+    @app.post("/profile")
+    @login_required
+    def profile_submit():
+        form_action = request.form.get("form_action", "profile").strip().lower()
+        if form_action == "password":
+            new_password = request.form.get("new_password", "")
+            confirm_password = request.form.get("confirm_password", "")
+            if len(new_password) < 8:
+                return render_profile_page(
+                    error="Enter a new password with at least 8 characters.",
+                    status=400,
+                )
+            if new_password != confirm_password:
+                return render_profile_page(
+                    error="New password and confirmation did not match.",
+                    status=400,
+                )
+            try:
+                supabase_request(
+                    "/auth/v1/user",
+                    method="PUT",
+                    access_token=g.supabase_access_token,
+                    payload={"password": new_password},
+                )
+            except SupabaseResponseError as exc:
+                reason = str(exc).casefold()
+                if "weak" in reason or "password" in reason:
+                    msg = "Supabase rejected that password. Use a stronger password with upper/lowercase letters, a number, and a symbol."
+                else:
+                    msg = "Could not update your password right now. Try signing in again."
+                return render_profile_page(error=msg, status=400)
+            except SupabaseUnavailable:
+                return render_profile_page(
+                    error="Could not connect to Supabase to update your password.",
+                    status=503,
+                )
+            return render_profile_page(notice="Your account password has been updated.")
+
+        display_name = request.form.get("display_name", "").strip()[:80]
+        organization = request.form.get("organization", "").strip()[:100]
+        try:
+            supabase_request(
+                "/auth/v1/user",
+                method="PUT",
+                access_token=g.supabase_access_token,
+                payload={
+                    "data": {
+                        "display_name": display_name,
+                        "organization": organization,
+                    }
+                },
+            )
+            g.current_user["display_name"] = display_name
+            g.current_user["organization"] = organization
+        except (SupabaseResponseError, SupabaseUnavailable):
+            return render_profile_page(
+                error="Could not save your profile settings right now.",
+                status=503,
+            )
+        return render_profile_page(notice="Profile details saved.")
+
+    def render_reporting_dashboard(*, endpoint_name: str, is_admin_dataset: bool):
+        raw_scans = []
+        load_error = None
+        user = current_user()
+        query_params = {
+            "select": "id,user_id,profiles(email),sender,subject,email_body,verdict,confidence_percent,top_terms,created_at",
+            "order": "created_at.desc",
+            "limit": "200",
+        }
+        if not is_admin_dataset and user:
+            query_params["user_id"] = f"eq.{user['id']}"
+
+        try:
+            raw_scans, _status = supabase_request(
+                "/rest/v1/email_scans",
+                access_token=g.supabase_access_token,
+                query=query_params,
             )
         except SupabaseUnavailable:
             load_error = "Could not connect to Supabase to load the dataset."
         except SupabaseResponseError:
-            app.logger.exception("Admin dataset query failed")
+            app.logger.exception("Dashboard dataset query failed")
             load_error = "The dataset could not be loaded. Check the Supabase schema and access policies."
-        return render_template("admin.html", user=current_user(), scans=scans or [], load_error=load_error)
+
+        enriched_scans = enrich_scan_rows(raw_scans)
+
+        preset = request.args.get("preset", "all").strip().lower()
+        if preset not in ("all", "today", "7d", "30d"):
+            preset = "all"
+        date_from = request.args.get("date_from", "").strip()
+        date_to = request.args.get("date_to", "").strip()
+
+        now_utc = datetime.now(timezone.utc).date()
+        if not date_from and preset in ("today", "7d", "30d"):
+            if preset == "today":
+                date_from = now_utc.isoformat()
+            elif preset == "7d":
+                date_from = (now_utc - timedelta(days=7)).isoformat()
+            elif preset == "30d":
+                date_from = (now_utc - timedelta(days=30)).isoformat()
+
+        result_filter = request.args.get("result", "all").strip().lower()
+        if result_filter not in ("all", "phishing", "legitimate"):
+            result_filter = "all"
+
+        category_filter = request.args.get("category", "all").strip().lower()
+        if category_filter != "all" and category_filter not in THREAT_CATEGORY_LABELS:
+            category_filter = "all"
+
+        filtered_scans = []
+        for row in enriched_scans:
+            if date_from and row["scan_date"] and row["scan_date"] < date_from:
+                continue
+            if date_to and row["scan_date"] and row["scan_date"] > date_to:
+                continue
+            if result_filter != "all" and row.get("verdict") != result_filter:
+                continue
+            if category_filter != "all" and row.get("threat_category") != category_filter:
+                continue
+            filtered_scans.append(row)
+
+        total_scans = len(filtered_scans)
+        phishing_count = sum(1 for r in filtered_scans if r.get("verdict") == "phishing")
+        legitimate_count = total_scans - phishing_count
+        phishing_pct = round(phishing_count / total_scans * 100, 1) if total_scans else 0.0
+        legitimate_pct = round(legitimate_count / total_scans * 100, 1) if total_scans else 0.0
+        avg_conf = (
+            round(
+                sum(float(r.get("confidence_percent") or 0.0) for r in filtered_scans) / total_scans,
+                1,
+            )
+            if total_scans
+            else 0.0
+        )
+
+        cat_counts = {slug: 0 for slug, _label in THREAT_CATEGORIES}
+        for r in filtered_scans:
+            c_slug = r.get("threat_category", "clean")
+            if c_slug in cat_counts:
+                cat_counts[c_slug] += 1
+
+        category_breakdown = [
+            {
+                "slug": slug,
+                "label": label,
+                "count": cat_counts[slug],
+                "percent": round(cat_counts[slug] / total_scans * 100, 1) if total_scans else 0.0,
+            }
+            for slug, label in THREAT_CATEGORIES
+        ]
+
+        filters = {
+            "preset": preset,
+            "date_from": date_from,
+            "date_to": date_to,
+            "result": result_filter,
+            "category": category_filter,
+            "active": bool(date_from or date_to or result_filter != "all" or category_filter != "all" or preset != "all"),
+        }
+        stats = {
+            "total_scans": total_scans,
+            "unfiltered_total": len(enriched_scans),
+            "phishing_count": phishing_count,
+            "phishing_pct": phishing_pct,
+            "legitimate_count": legitimate_count,
+            "legitimate_pct": legitimate_pct,
+            "avg_confidence": avg_conf,
+        }
+
+        return render_template(
+            "admin.html",
+            user=user,
+            scans=filtered_scans,
+            load_error=load_error,
+            filters=filters,
+            stats=stats,
+            category_breakdown=category_breakdown,
+            threat_categories=THREAT_CATEGORIES,
+            model_benchmarks=MODEL_BENCHMARKS,
+            endpoint_name=endpoint_name,
+            is_admin_dataset=is_admin_dataset,
+        )
+
+    @app.get("/dashboard")
+    @login_required
+    def dashboard():
+        is_admin = current_user()["role"] == "admin"
+        return render_reporting_dashboard(endpoint_name="dashboard", is_admin_dataset=is_admin)
+
+    @app.get("/admin")
+    @admin_required
+    def admin():
+        return render_reporting_dashboard(endpoint_name="admin", is_admin_dataset=True)
 
     @app.errorhandler(403)
     def forbidden(_error):

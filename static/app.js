@@ -37,8 +37,19 @@
     window.history.replaceState({ scanComplete: true }, "", "/");
   }
 
+  const applyFillWidths = (root = document) => {
+    root.querySelectorAll("[data-fill-width]").forEach((el) => {
+      const pct = Math.max(0, Math.min(100, Number(el.dataset.fillWidth) || 0));
+      el.style.width = `${pct}%`;
+    });
+  };
+
+  applyFillWidths();
+
   const animateConfidence = (panel) => {
-    if (!panel || reduceMotion) return;
+    if (!panel) return;
+    applyFillWidths(panel);
+    if (reduceMotion) return;
 
     const modelRows = panel.querySelectorAll(".model-row");
     modelRows.forEach((row) => {

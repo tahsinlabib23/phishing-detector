@@ -4,44 +4,210 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0a0a0a">
-  <title>Admin dataset · Phishing Detector</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-20') }}">
+  <title>Reporting dashboard · Phishing Detector</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-22') }}">
 </head>
 <body>
   <div class="page-shell admin-shell">
     <header class="topbar">
       <a class="brand" href="{{ url_for('index') }}"><span class="brand-name"><span class="brand-prompt" aria-hidden="true">~/</span> phishing-detector</span></a>
       <nav class="account-nav" aria-label="Account">
-        <span class="account-email">{{ user.email }}</span>
+        <span class="account-email">{{ user.display_name or user.email }}</span>
         <a class="account-link" href="{{ url_for('index') }}">[ scan email ]</a>
+        <a class="account-link" href="{{ url_for('dashboard') }}">[ dashboard ]</a>
+        <a class="account-link" href="{{ url_for('profile') }}">[ profile ]</a>
+        {% if user.role == 'admin' %}<a class="account-link" href="{{ url_for('admin') }}">[ dataset ]</a>{% endif %}
         <form action="{{ url_for('logout') }}" method="post"><button class="logout-button" type="submit">[ sign out ]</button></form>
       </nav>
     </header>
     <main class="admin-main">
-      <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> admin@dataset:~$ select * from email_scans</p>
+      <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> {{ 'admin@dataset' if is_admin_dataset else 'operator@history' }}:~$ select * from email_scans --filter</p>
       <div class="admin-heading-row">
         <div>
-          <h1>Scan dataset.</h1>
-          <p class="auth-description">Saved email content and model results. Email text is visible to authorized admins.</p>
+          <h1>{% if endpoint_name == 'dashboard' %}Reporting dashboard.{% else %}Scan dataset.{% endif %}</h1>
+          <p class="auth-description">Filter saved email scans by date range, result verdict, and automated threat category.</p>
         </div>
-        <span class="dataset-count">{{ scans|length }} <small>latest records</small></span>
+        <span class="dataset-count">{{ stats.total_scans if stats else scans|length }} <small>matching / {{ stats.unfiltered_total if stats else scans|length }} total</small></span>
       </div>
+
       {% if load_error %}<p class="auth-error" role="alert">{{ load_error }}</p>{% endif %}
-      {% if not load_error and not scans %}<div class="dataset-empty">No scans have been saved yet.</div>{% endif %}
+
+      {% if stats %}
+      <section class="dashboard-kpis" aria-label="Summary statistics">
+        <div class="kpi-card">
+          <span class="kpi-label">Matching Scans</span>
+          <strong class="kpi-value">{{ stats.total_scans }}</strong>
+          <span class="kpi-sub">of {{ stats.unfiltered_total }} total records</span>
+        </div>
+        <div class="kpi-card kpi-card--phishing">
+          <span class="kpi-label">Phishing (SCAM)</span>
+          <strong class="kpi-value">{{ stats.phishing_count }}</strong>
+          <span class="kpi-sub">{{ '%.1f'|format(stats.phishing_pct) }}% of filtered scans</span>
+        </div>
+        <div class="kpi-card kpi-card--legitimate">
+          <span class="kpi-label">Legitimate (SAFE)</span>
+          <strong class="kpi-value">{{ stats.legitimate_count }}</strong>
+          <span class="kpi-sub">{{ '%.1f'|format(stats.legitimate_pct) }}% of filtered scans</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Mean Confidence</span>
+          <strong class="kpi-value">{{ '%.1f'|format(stats.avg_confidence) }}%</strong>
+          <span class="kpi-sub">primary model probability</span>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if filters is defined %}
+      <form class="filter-panel" action="{{ url_for(endpoint_name|default('dashboard')) }}" method="get" aria-label="Filter scan history">
+        <div class="filter-panel-top">
+          <span class="filter-panel-title">// Filter Controls</span>
+          <div class="preset-pills" role="group" aria-label="Quick date presets">
+            <a class="preset-pill {{ 'preset-pill--active' if filters.preset == 'all' and not filters.date_from and not filters.date_to else '' }}" href="{{ url_for(endpoint_name|default('dashboard'), preset='all', result=filters.result, category=filters.category) }}">[ All Time ]</a>
+            <a class="preset-pill {{ 'preset-pill--active' if filters.preset == 'today' else '' }}" href="{{ url_for(endpoint_name|default('dashboard'), preset='today', result=filters.result, category=filters.category) }}">[ Today ]</a>
+            <a class="preset-pill {{ 'preset-pill--active' if filters.preset == '7d' else '' }}" href="{{ url_for(endpoint_name|default('dashboard'), preset='7d', result=filters.result, category=filters.category) }}">[ Last 7 Days ]</a>
+            <a class="preset-pill {{ 'preset-pill--active' if filters.preset == '30d' else '' }}" href="{{ url_for(endpoint_name|default('dashboard'), preset='30d', result=filters.result, category=filters.category) }}">[ Last 30 Days ]</a>
+          </div>
+        </div>
+        <div class="filter-grid">
+          <div class="filter-field">
+            <label class="filter-label" for="filter-date-from">From Date</label>
+            <input class="filter-input" id="filter-date-from" name="date_from" type="date" value="{{ filters.date_from }}">
+          </div>
+          <div class="filter-field">
+            <label class="filter-label" for="filter-date-to">To Date</label>
+            <input class="filter-input" id="filter-date-to" name="date_to" type="date" value="{{ filters.date_to }}">
+          </div>
+          <div class="filter-field">
+            <label class="filter-label" for="filter-result">Result</label>
+            <select class="filter-input" id="filter-result" name="result">
+              {% if filters.result == 'all' %}<option value="all" selected>All Results</option>{% else %}<option value="all">All Results</option>{% endif %}
+              {% if filters.result == 'phishing' %}<option value="phishing" selected>Phishing / SCAM</option>{% else %}<option value="phishing">Phishing / SCAM</option>{% endif %}
+              {% if filters.result == 'legitimate' %}<option value="legitimate" selected>Legitimate / SAFE</option>{% else %}<option value="legitimate">Legitimate / SAFE</option>{% endif %}
+            </select>
+          </div>
+          <div class="filter-field">
+            <label class="filter-label" for="filter-category">Threat Category</label>
+            <select class="filter-input" id="filter-category" name="category">
+              {% if filters.category == 'all' %}<option value="all" selected>All Categories</option>{% else %}<option value="all">All Categories</option>{% endif %}
+              {% for cat_slug, cat_label in threat_categories %}
+              {% if filters.category == cat_slug %}<option value="{{ cat_slug }}" selected>{{ cat_label }}</option>{% else %}<option value="{{ cat_slug }}">{{ cat_label }}</option>{% endif %}
+              {% endfor %}
+            </select>
+          </div>
+          <div class="filter-actions">
+            <button class="scan-button filter-submit" type="submit">[ apply filters ]</button>
+            <a class="filter-reset" href="{{ url_for(endpoint_name|default('dashboard')) }}">[ reset ]</a>
+          </div>
+        </div>
+      </form>
+      {% endif %}
+
+      {% if category_breakdown %}
+      <section class="category-breakdown-panel" aria-label="Threat category breakdown">
+        <p class="filter-panel-title">// Threat Category Breakdown</p>
+        <div class="category-bars-grid">
+          {% for cat in category_breakdown %}
+          <div class="category-bar-row">
+            <div class="category-bar-header">
+              <span class="threat-badge threat-badge--{{ cat.slug }}">{{ cat.label }}</span>
+              <span class="category-bar-stats">{{ cat.count }} scans · {{ '%.1f'|format(cat.percent) }}%</span>
+            </div>
+            <div class="model-track" aria-hidden="true">
+              <span class="model-fill model-fill--{{ 'legitimate' if cat.slug == 'clean' else 'phishing' }}" data-fill-width="{{ cat.percent }}"></span>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
+      {% if model_benchmarks %}
+      <section class="benchmark-panel" aria-label="Machine learning model performance comparison">
+        <div class="filter-panel-top">
+          <span class="filter-panel-title">// Model Performance Comparison (Held-Out Test Set · N = 10,868 Emails)</span>
+          <span class="benchmark-split-tag">Split: 70% Train (50,713) · 15% Val (10,867) · 15% Test (10,868)</span>
+        </div>
+        <div class="dataset-table-wrap benchmark-table-wrap">
+          <table class="dataset-table benchmark-table">
+            <thead>
+              <tr>
+                <th>Model Architecture</th>
+                <th>Role</th>
+                <th>Accuracy</th>
+                <th>Precision (Phishing)</th>
+                <th>Recall (Phishing)</th>
+                <th>F1-Score (Phishing)</th>
+                <th>Val Macro F1</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for m in model_benchmarks %}
+              <tr class="benchmark-row {{ 'benchmark-row--primary' if m.is_primary else '' }}">
+                <td>
+                  <strong class="benchmark-model-name">{{ m.name }}</strong>
+                  <span class="benchmark-model-config">{{ m.config }}</span>
+                </td>
+                <td>
+                  <span class="dataset-verdict dataset-verdict--{{ 'legitimate' if m.is_primary else 'neutral' }}">{{ m.role }}</span>
+                </td>
+                <td>
+                  <div class="benchmark-metric-cell">
+                    <strong>{{ '%.1f'|format(m.accuracy) }}%</strong>
+                    <div class="model-track" aria-hidden="true"><span class="model-fill model-fill--legitimate" data-fill-width="{{ m.accuracy }}"></span></div>
+                  </div>
+                </td>
+                <td>
+                  <div class="benchmark-metric-cell">
+                    <strong>{{ '%.1f'|format(m.precision) }}%</strong>
+                    <div class="model-track" aria-hidden="true"><span class="model-fill model-fill--legitimate" data-fill-width="{{ m.precision }}"></span></div>
+                  </div>
+                </td>
+                <td>
+                  <div class="benchmark-metric-cell">
+                    <strong>{{ '%.1f'|format(m.recall) }}%</strong>
+                    <div class="model-track" aria-hidden="true"><span class="model-fill model-fill--legitimate" data-fill-width="{{ m.recall }}"></span></div>
+                  </div>
+                </td>
+                <td>
+                  <div class="benchmark-metric-cell">
+                    <strong>{{ '%.1f'|format(m.f1_score) }}%</strong>
+                    <div class="model-track" aria-hidden="true"><span class="model-fill model-fill--legitimate" data-fill-width="{{ m.f1_score }}"></span></div>
+                  </div>
+                </td>
+                <td class="benchmark-val-col">{{ '%.1f'|format(m.val_accuracy) }}%</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if not load_error and not scans %}
+      <div class="dataset-empty">
+        {% if filters is defined and filters.active %}
+          No scan records matched your active filters. <a href="{{ url_for(endpoint_name|default('dashboard')) }}">Reset filters</a> to view all scans.
+        {% else %}
+          No scans have been saved yet.
+        {% endif %}
+      </div>
+      {% endif %}
+
       {% if scans %}
       <div class="dataset-table-wrap">
         <table class="dataset-table">
-          <thead><tr><th>Scanned</th><th>Account</th><th>From</th><th>Subject / message</th><th>Verdict</th><th>Confidence</th></tr></thead>
+          <thead><tr><th>Scanned</th><th>Account</th><th>From</th><th>Subject / message</th><th>Threat Category</th><th>Verdict</th><th>Confidence</th></tr></thead>
           <tbody>
             {% for row in scans %}
             <tr>
               <td class="dataset-date">{{ row.created_at|replace('T', ' ')|replace('+00:00', ' UTC')|replace('Z', ' UTC') }}</td>
-              <td class="dataset-sender">{{ row.profiles.email if row.profiles else row.user_id }}</td>
+              <td class="dataset-sender">{{ row.profiles.email if row.profiles else (user.email if row.user_id == user.id else row.user_id) }}</td>
               <td class="dataset-sender">{{ row.sender }}</td>
               <td class="dataset-message">
                 <strong>{{ row.subject or '(no subject)' }}</strong>
                 <details><summary>View saved email</summary><pre>{{ row.email_body }}</pre>{% if row.top_terms %}<p class="dataset-terms">Model determinations: {{ row.top_terms|join(', ') }}</p>{% endif %}</details>
               </td>
+              <td><span class="threat-badge threat-badge--{{ row.threat_category|default('clean') }}">{{ row.threat_category_label|default('Clean') }}</span></td>
               <td><span class="dataset-verdict dataset-verdict--{{ row.verdict }}">{{ 'SCAM' if row.verdict == 'phishing' else 'SAFE' }}</span></td>
               <td>{{ '%.1f'|format(row.confidence_percent|float) }}%</td>
             </tr>
@@ -49,14 +215,15 @@
           </tbody>
         </table>
       </div>
-      <p class="dataset-limit">Showing up to 100 most recent scans. Row access is restricted by Supabase policies.</p>
+      <p class="dataset-limit">Showing {{ scans|length }} matching scan record{{ '' if scans|length == 1 else 's' }} (up to 200 most recent scans). Row access is restricted by Supabase policies.</p>
       {% endif %}
     </main>
     <footer class="site-footer" aria-label="Site information">
       <a class="footer-brand" href="{{ url_for('index') }}">Phishing <span>Detector</span></a>
       <span class="site-footer-rule" aria-hidden="true"></span>
-      <span class="footer-description">// admin dataset</span>
+      <span class="footer-description">// reporting dashboard</span>
     </footer>
   </div>
+  <script src="{{ url_for('static', filename='app.js', v='ui-22') }}" defer></script>
 </body>
 </html>

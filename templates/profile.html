@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0a0a">
+  <title>User profile · Phishing Detector</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='ui-23') }}">
+</head>
+<body>
+  <div class="page-shell admin-shell">
+    <header class="topbar">
+      <a class="brand" href="{{ url_for('index') }}"><span class="brand-name"><span class="brand-prompt" aria-hidden="true">~/</span> phishing-detector</span></a>
+      <nav class="account-nav" aria-label="Account">
+        <span class="account-email">{{ user.display_name or user.email }}</span>
+        <a class="account-link" href="{{ url_for('index') }}">[ scan email ]</a>
+        <a class="account-link" href="{{ url_for('dashboard') }}">[ dashboard ]</a>
+        <a class="account-link" href="{{ url_for('profile') }}">[ profile ]</a>
+        {% if user.role == 'admin' %}<a class="account-link" href="{{ url_for('admin') }}">[ dataset ]</a>{% endif %}
+        <form action="{{ url_for('logout') }}" method="post"><button class="logout-button" type="submit">[ sign out ]</button></form>
+      </nav>
+    </header>
+
+    <main class="admin-main">
+      <p class="eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> operator@profile:~$ whoami --account --history</p>
+      <div class="admin-heading-row">
+        <div>
+          <h1>User profile.</h1>
+          <p class="auth-description">Manage your account details, security credentials, and personal email scan activity.</p>
+        </div>
+        <span class="dataset-count">{{ profile_stats.total_scans }} <small>personal scans</small></span>
+      </div>
+
+      {% if notice %}<p class="auth-notice" role="status">{{ notice }}</p>{% endif %}
+      {% if error %}<p class="auth-error" role="alert">{{ error }}</p>{% endif %}
+      {% if load_error %}<p class="auth-error" role="alert">{{ load_error }}</p>{% endif %}
+
+      <section class="dashboard-kpis" aria-label="Personal scan statistics">
+        <div class="kpi-card">
+          <span class="kpi-label">Personal Scans</span>
+          <strong class="kpi-value">{{ profile_stats.total_scans }}</strong>
+          <span class="kpi-sub">saved to your account</span>
+        </div>
+        <div class="kpi-card kpi-card--phishing">
+          <span class="kpi-label">Phishing Caught</span>
+          <strong class="kpi-value">{{ profile_stats.phishing_count }}</strong>
+          <span class="kpi-sub">{{ '%.1f'|format(profile_stats.phishing_pct) }}% of your scans</span>
+        </div>
+        <div class="kpi-card kpi-card--legitimate">
+          <span class="kpi-label">Legitimate Verified</span>
+          <strong class="kpi-value">{{ profile_stats.legitimate_count }}</strong>
+          <span class="kpi-sub">{{ '%.1f'|format(profile_stats.legitimate_pct) }}% of your scans</span>
+        </div>
+        <div class="kpi-card">
+          <span class="kpi-label">Mean Confidence</span>
+          <strong class="kpi-value">{{ '%.1f'|format(profile_stats.avg_confidence) }}%</strong>
+          <span class="kpi-sub">across personal scans</span>
+        </div>
+      </section>
+
+      <div class="profile-grid">
+        <section class="profile-card" aria-label="Account details and profile settings">
+          <p class="filter-panel-title">// Account Identity &amp; Profile</p>
+          <dl class="profile-meta-list">
+            <div class="profile-meta-row">
+              <dt>Email Address</dt>
+              <dd>{{ user.email }}</dd>
+            </div>
+            <div class="profile-meta-row">
+              <dt>Account Role</dt>
+              <dd><span class="dataset-verdict dataset-verdict--{{ 'phishing' if user.role == 'admin' else 'legitimate' }}">{{ user.role|upper }}</span></dd>
+            </div>
+            <div class="profile-meta-row">
+              <dt>Account ID</dt>
+              <dd class="profile-mono-id">{{ user.id }}</dd>
+            </div>
+            <div class="profile-meta-row">
+              <dt>Member Since</dt>
+              <dd>{{ (user.created_at[:10] if user.created_at else 'Active account') }}</dd>
+            </div>
+            <div class="profile-meta-row">
+              <dt>Last Scan Activity</dt>
+              <dd>{{ (profile_stats.last_scan_at|replace('T', ' ')|replace('+00:00', ' UTC')|replace('Z', ' UTC')) if profile_stats.last_scan_at else 'No scans recorded yet' }}</dd>
+            </div>
+          </dl>
+
+          <form class="profile-form" action="{{ url_for('profile_submit') }}" method="post">
+            <input type="hidden" name="form_action" value="profile">
+            <div class="filter-field">
+              <label class="filter-label" for="profile-display-name">Display Name</label>
+              <input class="filter-input" id="profile-display-name" name="display_name" type="text" maxlength="80" placeholder="e.g. Alex Mercer" value="{{ user.display_name }}">
+            </div>
+            <div class="filter-field">
+              <label class="filter-label" for="profile-organization">Organization / Team</label>
+              <input class="filter-input" id="profile-organization" name="organization" type="text" maxlength="100" placeholder="e.g. SOC Threat Analysis" value="{{ user.organization }}">
+            </div>
+            <button class="scan-button filter-submit" type="submit">[ save profile ]</button>
+          </form>
+        </section>
+
+        <section class="profile-card" aria-label="Password and security settings">
+          <p class="filter-panel-title">// Security &amp; Password Update</p>
+          <p class="profile-card-copy">Update your Supabase Auth password. Choose a password with at least 8 characters.</p>
+          <form class="profile-form" action="{{ url_for('profile_submit') }}" method="post">
+            <input type="hidden" name="form_action" value="password">
+            <div class="filter-field">
+              <label class="filter-label" for="profile-new-password">New Password</label>
+              <input class="filter-input" id="profile-new-password" name="new_password" type="password" autocomplete="new-password" minlength="8" required placeholder="••••••••">
+            </div>
+            <div class="filter-field">
+              <label class="filter-label" for="profile-confirm-password">Confirm New Password</label>
+              <input class="filter-input" id="profile-confirm-password" name="confirm_password" type="password" autocomplete="new-password" minlength="8" required placeholder="••••••••">
+            </div>
+            <button class="scan-button filter-submit" type="submit">[ update password ]</button>
+          </form>
+
+          <div class="profile-security-box">
+            <p class="filter-panel-title">// Session &amp; Database Protection</p>
+            <ul class="profile-security-list">
+              <li>Supabase JWT authentication with HttpOnly session cookies</li>
+              <li>PostgreSQL Row-Level Security (RLS) isolates user records</li>
+              <li>3-Model consensus stored with every email inspection</li>
+            </ul>
+          </div>
+        </section>
+      </div>
+
+      <section class="profile-history-panel" aria-label="Recent personal scan history">
+        <div class="filter-panel-top">
+          <span class="filter-panel-title">// Recent Personal Scans</span>
+          <a class="preset-pill" href="{{ url_for('dashboard') }}">[ open full reporting dashboard &amp; filters -&gt; ]</a>
+        </div>
+
+        {% if not recent_scans %}
+        <div class="dataset-empty">You have not scanned any emails yet. <a href="{{ url_for('index') }}">Scan your first email</a>.</div>
+        {% else %}
+        <div class="dataset-table-wrap">
+          <table class="dataset-table">
+            <thead><tr><th>Scanned</th><th>From</th><th>Subject / message</th><th>Threat Category</th><th>Verdict</th><th>Confidence</th></tr></thead>
+            <tbody>
+              {% for row in recent_scans %}
+              <tr>
+                <td class="dataset-date">{{ row.created_at|replace('T', ' ')|replace('+00:00', ' UTC')|replace('Z', ' UTC') }}</td>
+                <td class="dataset-sender">{{ row.sender }}</td>
+                <td class="dataset-message">
+                  <strong>{{ row.subject or '(no subject)' }}</strong>
+                  <details><summary>View saved email</summary><pre>{{ row.email_body }}</pre>{% if row.top_terms %}<p class="dataset-terms">Model determinations: {{ row.top_terms|join(', ') }}</p>{% endif %}</details>
+                </td>
+                <td><span class="threat-badge threat-badge--{{ row.threat_category|default('clean') }}">{{ row.threat_category_label|default('Clean') }}</span></td>
+                <td><span class="dataset-verdict dataset-verdict--{{ row.verdict }}">{{ 'SCAM' if row.verdict == 'phishing' else 'SAFE' }}</span></td>
+                <td>{{ '%.1f'|format(row.confidence_percent|float) }}%</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </section>
+    </main>
+
+    <footer class="site-footer" aria-label="Site information">
+      <a class="footer-brand" href="{{ url_for('index') }}">Phishing <span>Detector</span></a>
+      <span class="site-footer-rule" aria-hidden="true"></span>
+      <span class="footer-description">// user profile</span>
+    </footer>
+  </div>
+</body>
+</html>

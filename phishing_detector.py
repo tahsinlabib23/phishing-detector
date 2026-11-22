@@ -168,6 +168,86 @@ class EmailSecurityFeatures(BaseEstimator, TransformerMixin):
         ]
 
 
+THREAT_CATEGORIES: tuple[tuple[str, str], ...] = (
+    ("credential_harvesting", "Credential Harvesting"),
+    ("financial_fraud", "Financial Fraud"),
+    ("malicious_link", "Suspicious Link"),
+    ("social_engineering", "Urgency / Social Engineering"),
+    ("clean", "Clean"),
+)
+THREAT_CATEGORY_LABELS: dict[str, str] = dict(THREAT_CATEGORIES)
+
+MODEL_BENCHMARKS: tuple[dict[str, str | float | bool], ...] = (
+    {
+        "name": "Logistic Regression",
+        "config": "TF-IDF (1–2 n-grams, 200k) + 13 Security Signals · C=2.0, SAGA",
+        "role": "Primary Model",
+        "is_primary": True,
+        "accuracy": 98.8,
+        "precision": 98.0,
+        "recall": 99.0,
+        "f1_score": 99.0,
+        "macro_f1": 98.8,
+        "val_accuracy": 98.9,
+    },
+    {
+        "name": "Multinomial Naive Bayes",
+        "config": "TF-IDF (1–2 n-grams, 200k) · alpha=0.01 (Validation-Selected)",
+        "role": "Alternative 1",
+        "is_primary": False,
+        "accuracy": 97.8,
+        "precision": 99.0,
+        "recall": 96.0,
+        "f1_score": 98.0,
+        "macro_f1": 97.8,
+        "val_accuracy": 97.5,
+    },
+    {
+        "name": "Random Forest",
+        "config": "TF-IDF (1–2 n-grams, 200k) · 50 Trees, max_depth=20, Balanced",
+        "role": "Alternative 2",
+        "is_primary": False,
+        "accuracy": 95.3,
+        "precision": 92.0,
+        "recall": 97.0,
+        "f1_score": 95.0,
+        "macro_f1": 95.3,
+        "val_accuracy": 95.0,
+    },
+)
+
+
+def classify_threat_category(email_text: str, verdict: str) -> dict[str, str]:
+    """Classify an email scan into one of five explainable threat categories."""
+    if str(verdict).strip().lower() != "phishing":
+        return {
+            "threat_category": "clean",
+            "threat_category_label": THREAT_CATEGORY_LABELS["clean"],
+        }
+
+    text = str(email_text or "")
+    feats = EmailSecurityFeatures._features(text)
+    url_count = feats[0]
+    suspicious_domains = feats[8]
+    credential_terms = feats[10]
+    password_request = feats[11]
+    financial_request = feats[12]
+
+    if password_request >= 1 or (credential_terms >= 1 and financial_request == 0):
+        slug = "credential_harvesting"
+    elif financial_request >= 1 or _FINANCIAL_TERMS.search(text):
+        slug = "financial_fraud"
+    elif suspicious_domains >= 1 or url_count >= 1:
+        slug = "malicious_link"
+    else:
+        slug = "social_engineering"
+
+    return {
+        "threat_category": slug,
+        "threat_category_label": THREAT_CATEGORY_LABELS[slug],
+    }
+
+
 class ModelNotAvailable(Exception):
     """Raised when the configured model artifact is not present."""
 
@@ -350,6 +430,7 @@ class PhishingModel:
                 except Exception:
                     continue
 
+            threat_info = classify_threat_category(email_text, verdict)
             return {
                 "label": predicted,
                 "verdict": verdict,
@@ -357,6 +438,8 @@ class PhishingModel:
                 "confidence_percent": round(confidence * 100, 1),
                 "top_terms": self._top_contributing_terms(pipeline, email_text, predicted),
                 "models": models_results,
+                "threat_category": threat_info["threat_category"],
+                "threat_category_label": threat_info["threat_category_label"],
             }
         except (ModelNotAvailable, ModelLoadError):
             raise

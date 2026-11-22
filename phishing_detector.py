@@ -280,8 +280,6 @@ class PhishingModel:
         self._load_error_signature = None
         self._secondary_classifiers = {}
         self._lock = threading.Lock()
-        if loader is None and self.model_path.exists():
-            threading.Thread(target=self._warmup, daemon=True).start()
 
     def _warmup(self):
         try:
